@@ -51,6 +51,7 @@ async def create_order(
 ):
     """
     Создаёт новый заказ. Если клиента с таким телефоном нет – создаёт нового клиента.
+    Если клиент уже есть – обновляет его имя.
     """
     logging.info(f"📌 Создание заказа: user_id={user_id}, column_id={order_data.column_id}")
 
@@ -58,37 +59,43 @@ async def create_order(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Требуется авторизация")
 
     async with db.begin():
-        # 🔍 1. Проверяем, существует ли клиент по client_phone
+        # 🔍 Найти клиента по телефону
         existing_client = await db.execute(
             select(Client).where(Client.phone_number == order_data.client_phone)
         )
         client = existing_client.scalar_one_or_none()
 
-        # 🆕 2. Если клиента нет – создаем нового
-        if not client:
+        if client:
+            # 🔄 Обновляем имя, если оно отличается
+            if client.name != order_data.client_name:
+                logging.info(f"🔄 Обновляем имя клиента {client.phone_number} с '{client.name}' на '{order_data.client_name}'")
+                client.name = order_data.client_name
+                db.add(client)
+        else:
+            # 🆕 Создаем нового клиента
             client = Client(
                 name=order_data.client_name,
                 phone_number=order_data.client_phone
             )
             db.add(client)
-            await db.flush()  # Получаем client.id
+            await db.flush()  # получаем client.id
 
-        # ✅ 3. Создаем заказ, приводя даты к наивному виду
+        # ✅ Создаем заказ
         new_order = Order(
-            name=order_data.name,  # Название сделки
+            name=order_data.name,
             description=order_data.description,
             date_of_creation=order_data.date_of_creation.replace(tzinfo=None),
             date_of_send=order_data.date_of_send.replace(tzinfo=None) if order_data.date_of_send else None,
             address=order_data.address,
             delivery_method=order_data.delivery_method,
             price=order_data.price,
-            client_id=client.id,  # Привязываем клиента
+            client_id=client.id,
             column_id=order_data.column_id,
             status="CREATED",
         )
         db.add(new_order)
-        await db.flush()            # Флашим для получения id нового заказа
-        await db.refresh(new_order)   # Refresh внутри транзакции
+        await db.flush()
+        await db.refresh(new_order)
 
     return {
         "status": "success",
@@ -110,6 +117,7 @@ async def create_order(
             "columnId": new_order.column_id,
         },
     }
+
 
 
 @router.get("/orders", response_model=list[dict])
